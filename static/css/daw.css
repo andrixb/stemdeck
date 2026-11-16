@@ -6261,3 +6261,54 @@ html:not(.mode-daw) #master-drawer {
 .stems-pop-vnew:disabled { opacity: 0.45; cursor: default; }
 .stems-pop-vdelete.armed { border-color: var(--danger); color: var(--danger); }
 .stems-pop-vnew { border-color: var(--accent-2); color: var(--accent); font-weight: 600; }
+
+/* ── Lead sheet tab ──
+   Another view of the sidebar, like Lyrics: the search box and the library
+   list step aside so the score summary and its download links get the room. */
+.leadsheet-panel { display: none; }
+.sidebar.leadsheet-view .daw-search,
+.sidebar.leadsheet-view .clear-bin-bar,
+.sidebar.leadsheet-view .daw-lib-list { display: none !important; }
+.sidebar.leadsheet-view .leadsheet-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 1 1 auto; min-height: 0;
+}
+.leadsheet-title {
+  margin: 0; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+.leadsheet-note { margin: 0; font-size: 10.5px; line-height: 1.4; color: var(--muted); }
+.leadsheet-status { margin: 0; font-size: 12px; color: var(--fg-2); }
+.leadsheet-status:empty { display: none; }
+.leadsheet-status.muted { color: var(--muted); }
+.leadsheet-status.error { color: var(--danger); }
+.leadsheet-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.leadsheet-btn {
+  padding: 4px 9px; border: 1px solid var(--border-strong); border-radius: 6px;
+  background: transparent; color: var(--fg-2); font-family: var(--font-sans);
+  font-size: 11.5px; cursor: pointer; white-space: nowrap;
+}
+.leadsheet-btn:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); }
+.leadsheet-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.leadsheet-btn:disabled { opacity: 0.45; cursor: default; }
+.leadsheet-btn.primary { border-color: var(--accent-2); color: var(--accent); font-weight: 600; }
+.leadsheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 24px; }
+.leadsheet-body:empty { display: none; }
+.leadsheet-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+.leadsheet-fact { display: flex; flex-direction: column; min-width: 0; }
+.leadsheet-fact-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.leadsheet-fact-value { font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leadsheet-section-label { margin: 0; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.leadsheet-chords { display: flex; flex-wrap: wrap; gap: 4px; }
+.leadsheet-chip {
+  padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel); color: var(--fg-2); font-size: 11px;
+}
+.leadsheet-chip small { color: var(--muted); font-size: 9.5px; }
+.leadsheet-notes {
+  display: grid; grid-template-columns: auto 1fr; gap: 1px 8px;
+  font-family: var(--font-mono, monospace); font-size: 10.5px; color: var(--fg-2);
+}
+.leadsheet-notes .at { color: var(--muted); text-align: right; }
+.leadsheet-warning { margin: 0; font-size: 10.5px; color: var(--danger); }
+.leadsheet-path-hint { margin: 0; font-size: 10px; color: var(--muted); }

@@ -51,6 +51,8 @@
 
 StemDeck splits a song into up to six stems, vocals, drums, bass, guitar, piano and other, and opens them in a studio where you can mute, solo, slow down, loop, change the key and play along with a click. Sing along in Karaoke, or film yourself playing along in Performance. Drop in an audio file or paste a YouTube or SoundCloud link. Separation runs on your own machine, and StemDeck does not upload your audio.
 
+> **This fork adds lead sheets.** The **Lead Sheet** view in the sidebar transcribes the open song's melody and chords from its separated stems, using the vendored engine in `app/leadsheet/`. It shows key, tempo, counts and chord symbols, and downloads `lead-sheet.musicxml`, `lead-sheet.mid`, `alignment.json` and `metadata.json` from the song's folder. The work runs locally; nothing is uploaded.
+
 > **A separation tool, not a downloader.** StemDeck is for processing audio you have the right to use. What you import, the stems made from it, and the takes you record, are saved in your library folder on the machine that runs StemDeck; StemDeck does not upload or share them. See the [Disclaimer](#disclaimer).
 
 

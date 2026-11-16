@@ -1,0 +1,9 @@
+"""Shared constants for the transcription pipeline."""
+
+SAMPLE_RATE = 22_050
+HOP_LENGTH = 512
+ALIGN_HOP_LENGTH = 2_048
+MELODY_FMIN = 65.4  # C2
+MELODY_FMAX = 1_046.5  # C6
+DEFAULT_BEATS_PER_MEASURE = 4
+MIN_NOTE_SECONDS = 0.08

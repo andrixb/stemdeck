@@ -27,6 +27,7 @@ import { initFooterFit, refitFooter } from "./footerFit.js";
 import { externalLinkAction } from "./externalLinks.js";
 import { initArtistInfo } from "./artistInfo.js";
 import { initLyrics } from "./lyrics.js";
+import { initLeadSheet } from "./leadSheet.js";
 import { initHelpMode } from "./helpMode.js";
 import { initVideoTake } from "./video/videoTake.js";
 import { initMasterPanel } from "./masterPanel.js";
@@ -528,6 +529,7 @@ wireAppShellControls();
 initFooterFit();
 initArtistInfo();
 initLyrics();
+initLeadSheet();
 initHelpMode();
 // Camera in the record flow and "Make video" (static/js/video/). Async only to
 // load the capture modules; a failure there must not stop the studio.

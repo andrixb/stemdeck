@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from app.api.takes import cancel_job_renders, forget_job_locks
@@ -85,7 +85,7 @@ from app.core.versions import (
 from app.core.vocal_split_outcome import CANCELLED as SPLIT_CANCELLED
 from app.core.vocal_split_outcome import WORKER_FAILED as SPLIT_WORKER_FAILED
 from app.core.vocal_split_outcome import message_for as split_message_for
-from app.pipeline import discogs, jobqueue, vocal_split_status
+from app.pipeline import discogs, jobqueue, lead_sheet, vocal_split_status
 from app.pipeline.analyze import dynamic_range_db, measure_loudness
 from app.pipeline.artist_lookup import tagged_artist_name
 from app.pipeline.audio_tags import probe_tags
@@ -94,6 +94,7 @@ from app.pipeline.collect import merge_stem_peaks, presence_for_split, remove_jo
 from app.pipeline.download import InvalidYouTubeURL, fetch_audio_tags, validate_youtube_url
 from app.pipeline.errors import classify_failure
 from app.pipeline.identify import can_identify_title, identify_and_find_band, release_source
+from app.pipeline.lead_sheet import LeadSheetCancelled, LeadSheetError, PipelineError
 from app.pipeline.lyrics_align import detect_offset
 from app.pipeline.lyrics_lookup import (
     _TEXT_MAX_CHARS,
@@ -1345,6 +1346,167 @@ async def fill_missing_stems(job_id: str, body: FillStemsBody) -> JSONResponse:
     _set(job, stage="Done")
     await asyncio.to_thread(registry_persist, JOBS_DIR)
     return JSONResponse({"filled": filled, "state": _job_state(job)})
+
+
+# Lead-sheet runs, by song id: the event DELETE .../lead-sheet sets and the
+# task the endpoint started, so a second POST joins the run instead of
+# starting a second one.
+_LEAD_SHEET_TASKS: dict[str, asyncio.Task] = {}
+_LEAD_SHEET_CANCELS: dict[str, threading.Event] = {}
+
+_LEAD_SHEET_MEDIA_TYPES = {
+    "lead-sheet.musicxml": "application/vnd.recordare.musicxml+xml",
+    "lead-sheet.mid": "audio/midi",
+    "alignment.json": "application/json",
+    "metadata.json": "application/json",
+}
+
+
+class LeadSheetBody(BaseModel):
+    tempo: float | None = Field(default=None, gt=0, le=400)
+    beats_per_measure: int = Field(default=4, ge=1, le=16)
+    # Regenerate even when a lead sheet already exists (the lead-sheet tab's
+    # "Generate again").
+    force: bool = False
+
+
+def _lead_sheet_job(job_id: str) -> tuple[Job, Path]:
+    """The song a lead-sheet request is about, after the id and state checks.
+    404 for anything not in the library; 409 while the song is not done."""
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    job = registry_get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail="the song is not ready")
+    return job, _job_dir(job_id)
+
+
+def _lead_sheet_state(job: Job, job_dir: Path) -> dict:
+    files = lead_sheet.existing_files(job_dir)
+    # The files are the truth: a song rebuilt from its folder has no record of
+    # the run, and a record that says "done" without its files is not done.
+    status = job.lead_sheet
+    if status not in ("running", "error"):
+        status = "done" if files else "none"
+    return {
+        "job_id": job.id,
+        "status": status,
+        "error": job.lead_sheet_error,
+        "has_lead_sheet": bool(files),
+        "metadata": lead_sheet.read_metadata(job_dir),
+        "files": {name: f"/api/jobs/{job.id}/lead-sheet/files/{name}" for name in files},
+    }
+
+
+async def _run_lead_sheet(
+    job: Job, job_dir: Path, body: LeadSheetBody, cancel: threading.Event
+) -> None:
+    """Make the lead sheet in a thread, under the pipeline lock, then record
+    the outcome on the job. Never raises: the request that started it has
+    already been answered."""
+    try:
+        async with _pipeline_lock:
+            await asyncio.to_thread(
+                lead_sheet.generate,
+                job,
+                job_dir,
+                tempo=body.tempo,
+                beats_per_measure=body.beats_per_measure,
+                cancel=cancel,
+            )
+    except LeadSheetCancelled:
+        _set(
+            job,
+            lead_sheet="done" if lead_sheet.existing_files(job_dir) else "none",
+            lead_sheet_error=None,
+        )
+    except (LeadSheetError, PipelineError) as exc:
+        _set(job, lead_sheet="error", lead_sheet_error=str(exc)[:300])
+    except Exception:
+        logger.exception("[%s] lead-sheet transcription failed", job.id)
+        _set(job, lead_sheet="error", lead_sheet_error="could not make the lead sheet")
+    else:
+        _set(job, lead_sheet="done", lead_sheet_error=None, has_lead_sheet=True)
+    finally:
+        await asyncio.to_thread(registry_persist, JOBS_DIR)
+        _LEAD_SHEET_TASKS.pop(job.id, None)
+        _LEAD_SHEET_CANCELS.pop(job.id, None)
+
+
+@router.get("/{job_id}/lead-sheet")
+def get_lead_sheet(job_id: str) -> dict:
+    """The song's lead sheet: status, error, metadata and download URLs.
+    Answers "none" for a song nobody has transcribed yet."""
+    job, job_dir = _lead_sheet_job(job_id)
+    return _lead_sheet_state(job, job_dir)
+
+
+@router.post("/{job_id}/lead-sheet", status_code=202)
+async def create_lead_sheet(job_id: str, body: LeadSheetBody | None = None) -> dict:
+    """Transcribe the song's already-separated stems into a lead sheet.
+
+    Answers at once; the run continues in the background and is polled through
+    GET .../lead-sheet. An existing lead sheet is returned as it is unless
+    ``force`` asks for a new one. The result lands in the song's lead-sheet/
+    folder, so deleting the song deletes it too."""
+    job, job_dir = _lead_sheet_job(job_id)
+    body = body or LeadSheetBody()
+    if job.lead_sheet == "running":
+        return _lead_sheet_state(job, job_dir)
+    if not body.force and lead_sheet.existing_files(job_dir):
+        _set(job, lead_sheet="done", has_lead_sheet=True, lead_sheet_error=None)
+        await asyncio.to_thread(registry_persist, JOBS_DIR)
+        return _lead_sheet_state(job, job_dir)
+    if job.post_hoc_running():
+        raise HTTPException(status_code=409, detail="the song is busy")
+
+    cancel = threading.Event()
+    _LEAD_SHEET_CANCELS[job.id] = cancel
+    _set(job, lead_sheet="running", lead_sheet_error=None)
+    await asyncio.to_thread(registry_persist, JOBS_DIR)
+    _LEAD_SHEET_TASKS[job.id] = asyncio.create_task(_run_lead_sheet(job, job_dir, body, cancel))
+    return _lead_sheet_state(job, job_dir)
+
+
+@router.delete("/{job_id}/lead-sheet")
+async def delete_lead_sheet(job_id: str) -> JSONResponse:
+    """Stop a run in flight, or delete a finished lead sheet.
+
+    A running transcription is only asked to stop: its staging folder is never
+    the one on display, so the previous lead sheet stays until a new run
+    succeeds. Call again once "status" is no longer "running" to delete it."""
+    job, job_dir = _lead_sheet_job(job_id)
+    if job.lead_sheet == "running":
+        event = _LEAD_SHEET_CANCELS.get(job.id)
+        if event is not None:
+            event.set()
+        return JSONResponse(
+            {"job_id": job.id, "status": "running", "cancelling": True},
+            status_code=202,
+        )
+    lead_sheet.remove(job_dir)
+    _set(job, lead_sheet="none", lead_sheet_error=None, has_lead_sheet=False)
+    await asyncio.to_thread(registry_persist, JOBS_DIR)
+    return JSONResponse(_lead_sheet_state(job, job_dir))
+
+
+@router.get("/{job_id}/lead-sheet/files/{name}")
+def get_lead_sheet_file(job_id: str, name: str) -> FileResponse:
+    """One of the lead sheet's files: MusicXML, MIDI, alignment or metadata.
+    Only the names the engine writes are served."""
+    _lead_sheet_job(job_id)
+    if name not in lead_sheet.FILES:
+        raise HTTPException(status_code=404, detail="file not found")
+    path = (lead_sheet.output_dir(_job_dir(job_id)) / name).resolve()
+    if not path.is_relative_to(JOBS_DIR.resolve()) or not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(
+        path,
+        media_type=_LEAD_SHEET_MEDIA_TYPES.get(name, "application/octet-stream"),
+        filename=name,
+    )
 
 
 _SECTION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")

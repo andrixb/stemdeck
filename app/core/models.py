@@ -401,6 +401,13 @@ class Job:
     # post-hoc action on a "done" job like vocal_split. "error" leaves every
     # stem the song had as it was.
     stem_fill: Literal["none", "running", "done", "error"] = "none"
+    # Lead-sheet transcription (app/pipeline/lead_sheet.py, POST
+    # .../lead-sheet): a post-hoc action on a "done" job, like stem_fill.
+    # "done" and has_lead_sheet say the MusicXML/MIDI files are in the song's
+    # lead-sheet/ folder; "error" leaves any previous files untouched.
+    lead_sheet: Literal["none", "running", "done", "error"] = "none"
+    lead_sheet_error: str | None = None
+    has_lead_sheet: bool = False
     # When the user put this job in the Trash, or None if they have not.
     #
     # Server-side on purpose. The Trash used to live only in the browser's
@@ -504,15 +511,23 @@ class Job:
             "versions": versions_of(self),
             "active_version": active_of(self),
             "stem_fill": self.stem_fill,
+            "lead_sheet": self.lead_sheet,
+            "lead_sheet_error": self.lead_sheet_error,
+            "has_lead_sheet": self.has_lead_sheet,
             "trashed_at": self.trashed_at,
             "favorite": self.favorite,
             "created_at": self.created_at,
         }
 
     def post_hoc_running(self) -> bool:
-        """A stem fill or a vocal split is writing into this song's folder.
-        The queue statuses do not show it: the song stays "done" meanwhile."""
-        return self.stem_fill == "running" or self.vocal_split == "running"
+        """A stem fill, a vocal split or a lead-sheet run is writing into this
+        song's folder. The queue statuses do not show it: the song stays
+        "done" meanwhile."""
+        return (
+            self.stem_fill == "running"
+            or self.vocal_split == "running"
+            or self.lead_sheet == "running"
+        )
 
     def to_queue_state(self) -> dict[str, Any]:
         """The compact record the queue view needs. Deliberately not to_state():
@@ -562,6 +577,11 @@ class Job:
             job.active_version = None
         if job.stem_fill == "running":
             job.stem_fill = "error"
+        # Saved while the process ended mid-run: a later request can try again,
+        # and the files already written (if any) stay where they are.
+        if job.lead_sheet == "running":
+            job.lead_sheet = "error"
+            job.lead_sheet_error = "interrupted"
         return job
 
 

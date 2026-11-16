@@ -1196,7 +1196,7 @@ function moveTrackToTrash(trackId) {
 }
 
 function setCatalogView(view) {
-  catalogView = ["trash", "favorites", "queue", "lyrics"].includes(view) ? view : "library";
+  catalogView = ["trash", "favorites", "queue", "lyrics", "leadsheet"].includes(view) ? view : "library";
   // Switching to Trash, Favourites, Queue or Lyrics is a request to look at
   // the sidebar, so a collapsed one comes back. Through the shared helper, or
   // the collapse button's aria-expanded is left claiming the sidebar is still
@@ -2577,16 +2577,20 @@ function render() {
   const isFavoritesView = catalogView === "favorites";
   const isQueueView = catalogView === "queue";
   const isLyricsView = catalogView === "lyrics";
-  const isLibraryView = !isTrashView && !isFavoritesView && !isQueueView && !isLyricsView;
+  const isLeadSheetView = catalogView === "leadsheet";
+  const isLibraryView = !isTrashView && !isFavoritesView && !isQueueView && !isLyricsView && !isLeadSheetView;
 
   catalog?.classList.toggle("trash-view", isTrashView);
   catalog?.classList.toggle("favorites-view", isFavoritesView);
   catalog?.classList.toggle("queue-view", isQueueView);
-  // The lyrics panel replaces the list rather than being rendered into it;
-  // daw.css swaps which of the two is shown.
+  // The lyrics and lead-sheet panels replace the list rather than being
+  // rendered into it; daw.css swaps which of the two is shown.
   catalog?.classList.toggle("lyrics-view", isLyricsView);
+  catalog?.classList.toggle("leadsheet-view", isLeadSheetView);
   document.querySelector(".rail-lyrics")?.classList.toggle("active", isLyricsView);
   document.querySelector(".rail-lyrics")?.setAttribute("aria-pressed", String(isLyricsView));
+  document.querySelector(".rail-leadsheet")?.classList.toggle("active", isLeadSheetView);
+  document.querySelector(".rail-leadsheet")?.setAttribute("aria-pressed", String(isLeadSheetView));
 
   document.querySelector(".rail-library")?.classList.toggle("active", isLibraryView);
   document.querySelector(".rail-library")?.setAttribute("aria-pressed", String(isLibraryView));
@@ -3151,6 +3155,7 @@ function wireCatalogRailViews() {
   document.querySelector(".rail-favorites")?.addEventListener("click", () => setCatalogView("favorites"));
   document.querySelector(".rail-trash")?.addEventListener("click", () => setCatalogView("trash"));
   document.querySelector(".rail-lyrics")?.addEventListener("click", () => setCatalogView("lyrics"));
+  document.querySelector(".rail-leadsheet")?.addEventListener("click", () => setCatalogView("leadsheet"));
   document.querySelector(".rail-queue")?.addEventListener("click", () => setCatalogView("queue"));
   document.getElementById("clearBinBtn")?.addEventListener("click", async (e) => {
     const btn = e.currentTarget;
