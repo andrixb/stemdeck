@@ -7,13 +7,31 @@ import numpy as np
 from ..config import HOP_LENGTH, MELODY_FMAX, MELODY_FMIN, MIN_NOTE_SECONDS
 from .events import NoteEvent
 
+BASS_FMIN = 41.2
+BASS_FMAX = 392.0
+BASS_FRAME_LENGTH = 4096
+
 
 def transcribe_melody(
     y: np.ndarray,
     sr: int,
     hop_length: int = HOP_LENGTH,
+    *,
+    instrument: str | None = None,
 ) -> tuple[list[NoteEvent], str]:
-    """Return ``(notes, engine_name)`` for a monophonic source (vocal stem)."""
+    """Return ``(notes, engine_name)`` for a selected stem."""
+    if instrument is not None and instrument.casefold() == "bass":
+        return (
+            _pyin(
+                y,
+                sr,
+                hop_length,
+                fmin=BASS_FMIN,
+                fmax=BASS_FMAX,
+                frame_length=BASS_FRAME_LENGTH,
+            ),
+            "pyin-bass",
+        )
     notes = _basic_pitch(y, sr)
     if notes:
         return notes, "basic-pitch"
@@ -51,17 +69,25 @@ def _basic_pitch(y: np.ndarray, sr: int) -> list[NoteEvent]:
     return notes
 
 
-def _pyin(y: np.ndarray, sr: int, hop_length: int) -> list[NoteEvent]:
+def _pyin(
+    y: np.ndarray,
+    sr: int,
+    hop_length: int,
+    *,
+    fmin: float = MELODY_FMIN,
+    fmax: float = MELODY_FMAX,
+    frame_length: int = 2048,
+) -> list[NoteEvent]:
     import librosa
 
     if y.size == 0:
         return []
     f0, voiced, _ = librosa.pyin(
         y,
-        fmin=MELODY_FMIN,
-        fmax=MELODY_FMAX,
+        fmin=fmin,
+        fmax=fmax,
         sr=sr,
-        frame_length=2048,
+        frame_length=frame_length,
         hop_length=hop_length,
     )
     times = librosa.times_like(f0, sr=sr, hop_length=hop_length)

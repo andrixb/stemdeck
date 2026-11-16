@@ -25,6 +25,7 @@ from app.core.registry import _jobs
 from app.leadsheet.export.musicxml import build_score
 from app.leadsheet.quantize.chords_to_measures import MeasureChord
 from app.leadsheet.transcribe.events import NoteEvent
+from app.leadsheet.transcribe.melody import transcribe_melody
 from app.pipeline import lead_sheet
 from tests.ffmpeg_probe import skip_without_ffmpeg
 
@@ -113,6 +114,19 @@ def test_available_stems_are_validated_and_passed_to_the_engine(tmp_path, monkey
         dest.write_bytes(b"harmonic")
         return dest
 
+    isolated_other = {}
+
+    def fake_separate_stems(wav, out_root, model, **kwargs):
+        assert wav.name == "other.wav"
+        assert model == "htdemucs_6s"
+        assert kwargs["device"] == "cpu"
+        assert kwargs["two_stems"] == "other"
+        isolated_dir = out_root / model / wav.stem
+        isolated_dir.mkdir(parents=True)
+        isolated_other["path"] = isolated_dir / "other.wav"
+        isolated_other["path"].write_bytes(b"isolated")
+        return {"other": isolated_other["path"]}
+
     captured = {}
 
     def fake_engine(_source, out_dir, **kwargs):
@@ -124,10 +138,27 @@ def test_available_stems_are_validated_and_passed_to_the_engine(tmp_path, monkey
         )
 
     monkeypatch.setattr(lead_sheet, "harmonic_mix", fake_harmonic_mix)
+    monkeypatch.setattr(lead_sheet, "separate_stems", fake_separate_stems)
+    monkeypatch.setattr(lead_sheet, "get_demucs_device", lambda: "cpu")
     monkeypatch.setattr(lead_sheet, "run_engine", fake_engine)
-    lead_sheet.generate(_job(), tmp_path, melody_stems=["other", "guitar"])
+    result = lead_sheet.generate(_job(), tmp_path, melody_stems=["other", "guitar"])
     assert list(captured) == ["other", "guitar"]
-    assert [path.name for path in captured.values()] == ["other.wav", "guitar.wav"]
+    assert captured["other"] == isolated_other["path"]
+    assert captured["guitar"].name == "guitar.wav"
+    assert result["engines"]["melody_source_separation"] == {
+        "other": {"engine": "demucs", "model": "htdemucs_6s", "target": "other"}
+    }
+
+
+def test_bass_transcription_tracks_notes_below_the_general_pitch_floor():
+    sr = 22_050
+    t = np.arange(sr * 2) / sr
+    y = 0.4 * np.sin(2 * np.pi * 55.0 * t)
+
+    notes, engine = transcribe_melody(y, sr, instrument="bass")
+
+    assert engine == "pyin-bass"
+    assert any(abs(note.pitch - 33) <= 1 for note in notes)
 
 
 def test_score_keeps_selected_stems_as_separate_parts_with_shared_chords():

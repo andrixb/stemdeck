@@ -126,7 +126,11 @@ def run(
             0.48 + 0.1 * index / max(1, len(sources)),
             f"transcribing {part_name}",
         )
-        melody, melody_engine = transcribe_melody(y_part, SAMPLE_RATE)
+        melody, melody_engine = transcribe_melody(
+            y_part,
+            SAMPLE_RATE,
+            instrument=part_name.casefold(),
+        )
         part_notes = quantize_notes(melody, grid.tempo)
         melody_parts[part_name] = part_notes
         melody_engines[part_name] = melody_engine

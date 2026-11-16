@@ -29,13 +29,19 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 
-from app.core.config import TIMEOUT_FFMPEG, ffmpeg_executable
+from app.core.config import DEMUCS_MODEL, TIMEOUT_DEMUCS_STALL, TIMEOUT_FFMPEG, ffmpeg_executable
 from app.core.models import Job
+from app.core.settings import get_demucs_device
 from app.core.stem_files import decoded_wav, stem_exists, stem_path
 from app.leadsheet.config import SAMPLE_RATE
 from app.leadsheet.pipeline import PipelineError
 from app.leadsheet.pipeline import run as run_engine
-from app.leadsheet.separate.demucs import SeparationUnavailable, harmonic_mix
+from app.leadsheet.separate.demucs import (
+    SeparationCancelled,
+    SeparationUnavailable,
+    harmonic_mix,
+    separate_stems,
+)
 
 logger = logging.getLogger("stemdeck.lead_sheet")
 
@@ -210,6 +216,7 @@ def generate(
                 name: stack.enter_context(decoded_wav(path)) for name, path in stem_paths.items()
             }
             decoded_melodies = {name: decoded[name] for name in selected_melody_stems}
+            isolated_other_model: str | None = None
 
             report(0.08, "Mixing stems...")
             mix = _sum_stems(
@@ -230,6 +237,28 @@ def generate(
                 except SeparationUnavailable as exc:
                     logger.info("[%s] harmonic mix unavailable: %s", job.id, exc)
 
+            if "other" in decoded_melodies:
+                isolated_other_model = job.separation_model or DEMUCS_MODEL
+                report(0.12, "Isolating the Other stem for cleaner melody transcription...")
+                try:
+                    isolated = separate_stems(
+                        decoded_melodies["other"],
+                        staging / "melody-source-separation",
+                        model=isolated_other_model,
+                        device=get_demucs_device(),
+                        two_stems="other",
+                        cancel=cancel,
+                        timeout=TIMEOUT_DEMUCS_STALL,
+                    )
+                except SeparationCancelled:
+                    raise LeadSheetCancelled() from None
+                except SeparationUnavailable as exc:
+                    raise LeadSheetError(f"could not isolate the Other stem: {exc}") from exc
+                isolated_other = isolated.get("other")
+                if isolated_other is None or not isolated_other.is_file():
+                    raise LeadSheetError("Demucs did not produce an isolated Other stem")
+                decoded_melodies["other"] = isolated_other
+
             def engine_progress(value: float, message: str) -> None:
                 # The last 5% is this module's own save step, reported below.
                 report(0.15 + 0.8 * value, message)
@@ -246,6 +275,8 @@ def generate(
                 harmonic=harmonic,
                 progress=engine_progress,
             )
+            if isolated_other_model is not None:
+                shutil.rmtree(staging / "melody-source-separation", ignore_errors=True)
 
         metadata = _read_staging_metadata(staging)
         metadata["source"] = job.source_url or job.title or ""
@@ -255,6 +286,10 @@ def generate(
         # The stems came from the library, not from a Demucs run inside this
         # transcription; say so rather than let the engine claim otherwise.
         metadata.setdefault("engines", {})["separation"] = "stemdeck-stems"
+        if isolated_other_model is not None:
+            metadata["engines"]["melody_source_separation"] = {
+                "other": {"engine": "demucs", "model": isolated_other_model, "target": "other"}
+            }
         (staging / "metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
         )
