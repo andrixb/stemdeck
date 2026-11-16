@@ -38,6 +38,31 @@ def synthesize(
     return y
 
 
+def _sanitize_chroma(chroma: np.ndarray) -> np.ndarray:
+    """Make every chroma frame usable by a cosine comparison.
+
+    ``chroma_cens`` returns an all-zero column for digital silence, and the
+    cosine distance against a zero vector is ``0/0 = NaN``. librosa's DTW
+    rejects a cost matrix containing NaN, so one silent frame used to abort
+    the whole lead sheet (#1079). Replace silent frames with a flat pitch
+    distribution: where there is audio nothing changes, and a silent frame
+    becomes equally far from every pitch class instead of poisoning the
+    matrix.
+    """
+    frames = np.nan_to_num(
+        np.asarray(chroma, dtype=float),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    if frames.ndim != 2 or frames.size == 0:
+        return frames
+    silent = np.sum(np.abs(frames), axis=0) <= 1e-9
+    if np.any(silent):
+        frames[:, silent] = 1.0 / frames.shape[0]
+    return frames
+
+
 def align(
     reference: np.ndarray,
     notes: list[NoteEvent],
@@ -56,8 +81,12 @@ def align(
 
     import librosa
 
-    ref_chroma = librosa.feature.chroma_cens(y=reference, sr=sr, hop_length=hop_length)
-    syn_chroma = librosa.feature.chroma_cens(y=synth, sr=sr, hop_length=hop_length)
+    ref_chroma = _sanitize_chroma(
+        librosa.feature.chroma_cens(y=reference, sr=sr, hop_length=hop_length)
+    )
+    syn_chroma = _sanitize_chroma(
+        librosa.feature.chroma_cens(y=synth, sr=sr, hop_length=hop_length)
+    )
     if ref_chroma.shape[1] < 2 or syn_chroma.shape[1] < 2 or float(np.max(ref_chroma)) < 1e-6:
         return _linear(notes, beats, tempo, duration, fragment_start, beats_per_measure)
 
