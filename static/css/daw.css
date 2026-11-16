@@ -1871,6 +1871,88 @@ input, textarea { font-family: inherit; }
 .tag-loop.active { background: var(--accent); color: var(--bg); }
 .tag-loop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .tag-mark.tag-renaming .tag-loop { display: none; }
+
+/* ── Chord lane ──
+   The lead-sheet chords sit immediately below the ruler, over the same
+   zoomed canvas as the audio. Narrow segments remain seekable and expose the
+   full chord name on hover; zoom in to read dense changes. */
+.daw-chords-ribbon {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.daw-chords-header { padding-top: 3px; padding-bottom: 3px; }
+.daw-sections-area.daw-chords-area { height: 34px; }
+.chord-event {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-left: 1px solid rgba(244, 183, 64, 0.75);
+  background: rgba(244, 183, 64, 0.08);
+  color: #f4c66b;
+}
+.chord-event:hover,
+.chord-event:focus-within { z-index: 5; background: rgba(244, 183, 64, 0.18); }
+.chord-label {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-align: left;
+  text-overflow: clip;
+  cursor: pointer;
+}
+.chord-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--panel-3);
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+}
+.chord-event:hover .chord-delete,
+.chord-event:focus-within .chord-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+.chord-delete:hover { color: var(--fg); background: var(--border-strong); }
+.chord-edit-input {
+  width: min(76px, 100%);
+  min-width: 24px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
 .tag-del {
   display: none;
   flex-shrink: 0;
@@ -5025,6 +5107,7 @@ input, textarea { font-family: inherit; }
 .daw.is-import .daw-section-ribbon,
 .daw.is-import .daw-tags-ribbon,
 .daw.is-import .daw-wave-header,
+.daw.is-import .daw-chords-ribbon,
 .daw.is-import .daw-content { opacity: 0.3; pointer-events: none; }
 .daw.is-import .daw-content .mixer-column { opacity: 1; pointer-events: auto; }
 
@@ -5032,6 +5115,7 @@ input, textarea { font-family: inherit; }
 .daw.no-track .daw-section-ribbon,
 .daw.no-track .daw-tags-ribbon,
 .daw.no-track .daw-wave-header,
+.daw.no-track .daw-chords-ribbon,
 .daw.no-track .daw-content { opacity: 0.3; pointer-events: none; }
 /* Overlay and job progress live inside .daw-content but must stay fully visible while processing */
 .daw.no-track .daw-content .wave-loading-overlay,

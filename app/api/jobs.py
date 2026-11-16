@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field, StrictBool, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 from app.api.takes import cancel_job_renders, forget_job_locks
 from app.core.config import (
@@ -136,6 +136,9 @@ logger = logging.getLogger("stemdeck.api")
 
 _MAX_UPLOAD_BYTES = 400 * 1024 * 1024  # 400 MB
 _WS_RE = re.compile(r"\s+")
+_CHORD_SYMBOL_RE = re.compile(
+    r"^(?:N\.C\.|[A-G](?:#|b)?(?:m7|maj7|sus4|dim|aug|m|7)?(?:/[A-G](?:#|b)?)?)$"
+)
 
 # Now that imports queue instead of running immediately, a full queue is a
 # capacity statement the user can act on, not a transient "try again".
@@ -1382,6 +1385,52 @@ class LeadSheetBody(BaseModel):
         return stems
 
 
+class LeadSheetChordItem(BaseModel):
+    start: float
+    end: float
+    symbol: str = Field(min_length=1, max_length=32)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @field_validator("start", "end")
+    @classmethod
+    def _check_chord_time(cls, value: float) -> float:
+        if not math.isfinite(value) or not 0 <= value < 86400:
+            raise ValueError("time out of range")
+        return round(value, 3)
+
+    @field_validator("symbol")
+    @classmethod
+    def _check_chord_symbol(cls, value: str) -> str:
+        value = value.strip()
+        if not _CHORD_SYMBOL_RE.fullmatch(value):
+            raise ValueError("unsupported chord symbol")
+        return value
+
+    @model_validator(mode="after")
+    def _check_chord_span(self) -> LeadSheetChordItem:
+        if self.end <= self.start:
+            raise ValueError("chord end must follow its start")
+        return self
+
+
+_MAX_LEAD_SHEET_CHORDS = 10000
+
+
+class LeadSheetChordsBody(BaseModel):
+    chords: list[LeadSheetChordItem] = Field(max_length=_MAX_LEAD_SHEET_CHORDS)
+
+    @field_validator("chords")
+    @classmethod
+    def _check_chord_order(cls, chords: list[LeadSheetChordItem]) -> list[LeadSheetChordItem]:
+        ordered = sorted(chords, key=lambda chord: chord.start)
+        if any(
+            current.start < previous.end
+            for previous, current in zip(ordered, ordered[1:], strict=False)
+        ):
+            raise ValueError("chord intervals may not overlap")
+        return ordered
+
+
 def _lead_sheet_job(job_id: str) -> tuple[Job, Path]:
     """The song a lead-sheet request is about, after the id and state checks.
     404 for anything not in the library; 409 while the song is not done."""
@@ -1489,6 +1538,31 @@ async def create_lead_sheet(job_id: str, body: LeadSheetBody | None = None) -> d
     _set(job, lead_sheet="running", lead_sheet_error=None)
     await asyncio.to_thread(registry_persist, JOBS_DIR)
     _LEAD_SHEET_TASKS[job.id] = asyncio.create_task(_run_lead_sheet(job, job_dir, body, cancel))
+    return _lead_sheet_state(job, job_dir)
+
+
+@router.patch("/{job_id}/lead-sheet/chords")
+async def update_lead_sheet_chords(job_id: str, body: LeadSheetChordsBody) -> dict:
+    """Save corrected chord events and rebuild the MusicXML and MIDI exports."""
+    job, job_dir = _lead_sheet_job(job_id)
+    if job.lead_sheet == "running":
+        raise HTTPException(status_code=409, detail="the lead sheet is being regenerated")
+    if not lead_sheet.existing_files(job_dir):
+        raise HTTPException(status_code=409, detail="generate a lead sheet before editing chords")
+    if job.post_hoc_running():
+        raise HTTPException(status_code=409, detail="the song is busy")
+
+    async with _pipeline_lock:
+        if job.lead_sheet == "running":
+            raise HTTPException(status_code=409, detail="the lead sheet is being regenerated")
+        try:
+            await asyncio.to_thread(
+                lead_sheet.update_chords,
+                job_dir,
+                [chord.model_dump() for chord in body.chords],
+            )
+        except LeadSheetError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
     return _lead_sheet_state(job, job_dir)
 
 

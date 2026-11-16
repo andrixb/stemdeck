@@ -191,6 +191,7 @@ function renderBody(state) {
 }
 
 function render(state, trackId) {
+  document.dispatchEvent(new CustomEvent("leadsheetchange", { detail: { state, trackId } }));
   if (!state) {
     actionsEl.replaceChildren();
     bodyEl.replaceChildren();

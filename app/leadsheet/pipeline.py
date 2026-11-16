@@ -168,7 +168,12 @@ def run(
         melody_parts=melody_parts,
     )
     xml_path = write_musicxml(score, out_dir / "lead-sheet.musicxml")
-    midi_path = write_midi(score, out_dir / "lead-sheet.mid")
+    midi_path = write_midi(
+        score,
+        out_dir / "lead-sheet.mid",
+        chords=[{"start": chord.start, "symbol": chord.symbol} for chord in chords],
+        tempo=grid.tempo,
+    )
 
     report(0.85, "aligning score to audio")
     alignment = align(

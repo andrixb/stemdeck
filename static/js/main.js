@@ -17,6 +17,7 @@ import { wireBeatGridUi } from "./beatgridUi.js";
 import { togglePlayPause, updateLoopRegionVisual, toggleMetronome, transport, setPlayheadTime, setLoopRange, clearLoop, isCountInRunning } from "./transport.js";
 import { setSectionsLoopBridge, refreshSectionsAddState } from "./sections.js";
 import { setTimelineTagsBridge, seekToTagForKey, shortcutIndex, refreshTagLoopState } from "./timelineTags.js";
+import { initChordTrack, setChordTrackBridge } from "./chordTrack.js";
 import { wireStemListControls, laneDragIcon } from "./mixer.js";
 import { initCatalog, collectDiagnostics, wireCatalogControls } from "./catalog.js";
 import { initNotifications, notifyFailure, dismissFailuresByJobId } from "./notifications.js";
@@ -514,6 +515,10 @@ setTimelineTagsBridge({
   setLoopRange,
   clearLoop,
 });
+setChordTrackBridge({
+  getTime: () => transport()?.getCurrentTime() ?? null,
+  seek: setPlayheadTime,
+});
 onLoopChange(refreshTagLoopState);
 wireBeatGridUi();
 wireFooterControls();
@@ -530,6 +535,7 @@ initFooterFit();
 initArtistInfo();
 initLyrics();
 initLeadSheet();
+initChordTrack();
 initHelpMode();
 // Camera in the record flow and "Make video" (static/js/video/). Async only to
 // load the capture modules; a failure there must not stop the studio.

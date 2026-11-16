@@ -15,6 +15,7 @@ import time
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
+import music21 as m21
 import numpy as np
 import pytest
 import soundfile as sf
@@ -23,7 +24,12 @@ from fastapi.testclient import TestClient
 import app.api.jobs as jobs_mod
 from app.core.models import Job
 from app.core.registry import _jobs
-from app.leadsheet.export.musicxml import build_score, write_musicxml
+from app.leadsheet.export.musicxml import (
+    build_score,
+    replace_chord_symbols,
+    write_midi,
+    write_musicxml,
+)
 from app.leadsheet.quantize.chords_to_measures import MeasureChord
 from app.leadsheet.transcribe.events import NoteEvent
 from app.leadsheet.transcribe.melody import transcribe_melody
@@ -195,6 +201,107 @@ def test_musicxml_does_not_export_overlapping_melody_as_voice_zero(tmp_path):
     assert all(note.findtext("voice") != "0" for note in notes)
 
 
+def test_bass_part_uses_acoustic_bass_patch_and_bass_clef(tmp_path):
+    score = build_score([], [], tempo=120, melody_parts={"Bass": [NoteEvent(0, 0.5, 36)]})
+    path = write_musicxml(score, tmp_path / "bass.musicxml")
+
+    root = ET.parse(path).getroot()
+    bass = root.find("./part-list/score-part")
+    assert bass is not None
+    assert bass.findtext("./midi-instrument/midi-program") == "33"
+    assert root.findtext("./part/measure/attributes/clef/sign") == "F"
+    assert root.findtext("./part/measure/attributes/clef/line") == "4"
+
+
+def test_generated_midi_contains_chord_markers(tmp_path):
+    score = build_score(
+        [],
+        [
+            MeasureChord(0, 0.0, 0, "", "C"),
+            MeasureChord(1, 0.0, 7, "7", "G7"),
+        ],
+        tempo=120,
+    )
+    midi = write_midi(score, tmp_path / "generated.mid")
+    midi_file = m21.midi.MidiFile()
+    midi_file.open(str(midi), "rb")
+    try:
+        midi_file.read()
+    finally:
+        midi_file.close()
+
+    markers = []
+    for track in midi_file.tracks:
+        tick = 0
+        for event in track.events:
+            if isinstance(event, m21.midi.DeltaTime):
+                tick += event.time
+            elif isinstance(event, m21.midi.MidiEvent) and event.type == m21.midi.MetaEvents.MARKER:
+                marker = (
+                    event.data.decode("utf-8") if isinstance(event.data, bytes) else str(event.data)
+                )
+                markers.append((marker, tick))
+
+    assert markers == [("C", 0), ("G7", 4 * midi_file.ticksPerQuarterNote)]
+
+
+def test_replacing_chords_updates_musicxml_and_writes_silent_midi_markers(tmp_path):
+    score = build_score(
+        [],
+        [
+            MeasureChord(0, 0.0, 0, "", "C"),
+            MeasureChord(1, 0.0, 7, "7", "G7"),
+        ],
+        tempo=120,
+        melody_parts={"Bass": [NoteEvent(index * 0.5, 0.5, 36 + index) for index in range(8)]},
+    )
+    musicxml = write_musicxml(score, tmp_path / "editable.musicxml")
+    midi = tmp_path / "editable.mid"
+    before = [
+        note.findtext("pitch/step") + (note.findtext("pitch/octave") or "")
+        for note in ET.parse(musicxml).getroot().findall(".//note")
+        if note.find("pitch") is not None
+    ]
+
+    replace_chord_symbols(
+        musicxml,
+        midi,
+        [
+            {"start": 0.0, "end": 2.0, "symbol": "Dm7", "confidence": 1.0},
+            {"start": 2.0, "end": 4.0, "symbol": "G7", "confidence": 0.8},
+        ],
+        tempo=120,
+    )
+
+    parsed = m21.converter.parse(str(musicxml))
+    symbols = [
+        chord.figure
+        for part in parsed.parts
+        for chord in part.recurse().getElementsByClass(m21.harmony.ChordSymbol)
+    ]
+    after = [
+        note.findtext("pitch/step") + (note.findtext("pitch/octave") or "")
+        for note in ET.parse(musicxml).getroot().findall(".//note")
+        if note.find("pitch") is not None
+    ]
+    midi_file = m21.midi.MidiFile()
+    midi_file.open(str(midi), "rb")
+    try:
+        midi_file.read()
+    finally:
+        midi_file.close()
+    markers = [
+        event.data.decode("utf-8") if isinstance(event.data, bytes) else str(event.data)
+        for track in midi_file.tracks
+        for event in track.events
+        if isinstance(event, m21.midi.MidiEvent) and event.type == m21.midi.MetaEvents.MARKER
+    ]
+
+    assert symbols == ["Dm7", "G7"]
+    assert after == before
+    assert markers == ["Dm7", "G7"]
+
+
 def test_a_cancelled_run_leaves_nothing_behind(tmp_path):
     skip_without_ffmpeg()
     _write_stems(tmp_path)
@@ -295,6 +402,60 @@ def test_post_forwards_selected_stems_and_rejects_unavailable_stems(client, monk
     assert response.status_code == 202
     assert _wait(client, URL)["status"] == "done"
     assert melody_calls == [["bass"]]
+
+
+def test_patch_lead_sheet_chords_updates_the_score_exports(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs_mod, "JOBS_DIR", tmp_path)
+    job = Job(id=API_ID, status="done", title="Chord Edit Test", duration_sec=2.0)
+    _jobs[job.id] = job
+    sheet_dir = lead_sheet.output_dir(tmp_path / job.id)
+    sheet_dir.mkdir(parents=True)
+    score = build_score(
+        [],
+        [MeasureChord(0, 0.0, 0, "", "C")],
+        tempo=120,
+        melody_parts={"Bass": [NoteEvent(0, 0.5, 36)]},
+    )
+    write_musicxml(score, sheet_dir / "lead-sheet.musicxml")
+    write_midi(score, sheet_dir / "lead-sheet.mid")
+    (sheet_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "tempo": 120,
+                "duration": 2.0,
+                "counts": {"chords": 1},
+                "chords": [{"start": 0.0, "end": 2.0, "symbol": "C", "confidence": 0.9}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.patch(
+        f"/api/jobs/{API_ID}/lead-sheet/chords",
+        json={
+            "chords": [
+                {"start": 0.0, "end": 2.0, "symbol": "Dm7", "confidence": 0.9},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"]["chords"][0]["symbol"] == "Dm7"
+    updated = m21.converter.parse(str(sheet_dir / "lead-sheet.musicxml"))
+    assert [
+        chord.figure
+        for part in updated.parts
+        for chord in part.recurse().getElementsByClass(m21.harmony.ChordSymbol)
+    ] == ["Dm7"]
+
+
+def test_patch_lead_sheet_chords_rejects_invalid_symbols(client):
+    response = client.patch(
+        f"/api/jobs/{API_ID}/lead-sheet/chords",
+        json={"chords": [{"start": 0, "end": 1, "symbol": "not-a-chord"}]},
+    )
+
+    assert response.status_code == 422
 
 
 def test_a_second_post_keeps_the_existing_lead_sheet(client, monkeypatch):

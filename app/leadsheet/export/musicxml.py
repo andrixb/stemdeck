@@ -49,6 +49,8 @@ def build_score(
     for part_name, part_notes in parts.items():
         part = m21.stream.Part()
         part.partName = part_name
+        if part_name.casefold() == "bass":
+            part.insert(0, m21.instrument.AcousticBass())
         part.insert(0, m21.meter.TimeSignature(f"{beats_per_measure}/{beat_unit}"))
 
         tonic = m21.pitch.Pitch(root_name(key[0], flats))
@@ -100,7 +102,116 @@ def write_musicxml(score: m21.stream.Score, path: Path) -> Path:
     return path
 
 
-def write_midi(score: m21.stream.Score, path: Path) -> Path:
+def write_midi(
+    score: m21.stream.Score,
+    path: Path,
+    *,
+    chords: Sequence[Mapping[str, float | str]] | None = None,
+    tempo: float | None = None,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    copy.deepcopy(score).write("midi", fp=str(path))
+    marks = list(score.recurse().getElementsByClass(m21.tempo.MetronomeMark))
+    if tempo is None and marks:
+        tempo = float(marks[0].number)
+    if chords is None and tempo:
+        chords = [
+            {
+                "start": float(chord.getOffsetInHierarchy(score)) * 60.0 / tempo,
+                "symbol": chord.figure,
+            }
+            for part in score.parts
+            for chord in part.recurse().getElementsByClass(m21.harmony.ChordSymbol)
+        ]
+    if chords and tempo:
+        _write_midi_with_chord_markers(score, path, chords, tempo)
+    else:
+        copy.deepcopy(score).write("midi", fp=str(path))
     return path
+
+
+def replace_chord_symbols(
+    musicxml_path: Path,
+    midi_path: Path,
+    chords: Sequence[Mapping[str, float | str]],
+    *,
+    tempo: float,
+) -> None:
+    score = m21.converter.parse(str(musicxml_path))
+    parts = list(score.parts)
+    if not parts:
+        raise ValueError("the score contains no parts")
+
+    original_chord_part = next(
+        (part for part in parts if part.recurse().getElementsByClass(m21.harmony.ChordSymbol)),
+        parts[0],
+    )
+    for part in parts:
+        for chord in list(part.recurse().getElementsByClass(m21.harmony.ChordSymbol)):
+            if chord.activeSite is not None:
+                chord.activeSite.remove(chord)
+
+    measures = list(original_chord_part.getElementsByClass(m21.stream.Measure))
+    for item in sorted(chords, key=lambda chord: float(chord["start"])):
+        symbol = str(item["symbol"])
+        if symbol == "N.C.":
+            continue
+        offset = float(item["start"]) * tempo / 60.0
+        measure = next(
+            (
+                candidate
+                for candidate in measures
+                if candidate.offset <= offset < candidate.offset + candidate.duration.quarterLength
+            ),
+            None,
+        )
+        if measure is not None:
+            measure.insert(offset - measure.offset, m21.harmony.ChordSymbol(symbol))
+
+    score.write("musicxml", fp=str(musicxml_path))
+    _write_midi_with_chord_markers(score, midi_path, chords, tempo)
+
+
+def _write_midi_with_chord_markers(
+    score: m21.stream.Score,
+    path: Path,
+    chords: Sequence[Mapping[str, float | str]],
+    tempo: float,
+) -> None:
+    midi_file = m21.midi.translate.streamToMidiFile(copy.deepcopy(score))
+    track = m21.midi.MidiTrack(len(midi_file.tracks))
+
+    delta = m21.midi.DeltaTime(track)
+    delta.time = 0
+    track.events.append(delta)
+    name = m21.midi.MidiEvent(track)
+    name.type = m21.midi.MetaEvents.SEQUENCE_TRACK_NAME
+    name.data = "Chords"
+    track.events.append(name)
+
+    previous_tick = 0
+    for item in sorted(chords, key=lambda chord: float(chord["start"])):
+        symbol = str(item["symbol"])
+        if symbol == "N.C.":
+            continue
+        tick = round(float(item["start"]) * tempo / 60.0 * midi_file.ticksPerQuarterNote)
+        delta = m21.midi.DeltaTime(track)
+        delta.time = tick - previous_tick
+        marker = m21.midi.MidiEvent(track)
+        marker.type = m21.midi.MetaEvents.MARKER
+        marker.data = symbol
+        track.events.extend((delta, marker))
+        previous_tick = tick
+
+    delta = m21.midi.DeltaTime(track)
+    delta.time = 0
+    end = m21.midi.MidiEvent(track)
+    end.type = m21.midi.MetaEvents.END_OF_TRACK
+    end.data = b""
+    track.events.extend((delta, end))
+    midi_file.tracks.append(track)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    midi_file.open(str(path), "wb")
+    try:
+        midi_file.write()
+    finally:
+        midi_file.close()

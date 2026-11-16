@@ -34,6 +34,7 @@ from app.core.models import Job
 from app.core.settings import get_demucs_device
 from app.core.stem_files import decoded_wav, stem_exists, stem_path
 from app.leadsheet.config import SAMPLE_RATE
+from app.leadsheet.export.musicxml import replace_chord_symbols
 from app.leadsheet.pipeline import PipelineError
 from app.leadsheet.pipeline import run as run_engine
 from app.leadsheet.separate.demucs import (
@@ -321,6 +322,49 @@ def remove(job_dir: Path) -> None:
     shutil.rmtree(output_dir(job_dir), ignore_errors=True)
 
 
+def update_chords(job_dir: Path, chords: list[dict]) -> dict:
+    """Persist edited chord markers and rebuild both score exports."""
+    final = output_dir(job_dir)
+    metadata = read_metadata(job_dir)
+    musicxml_path = final / "lead-sheet.musicxml"
+    midi_path = final / "lead-sheet.mid"
+    if metadata is None or not musicxml_path.is_file() or not midi_path.is_file():
+        raise LeadSheetError("generate a lead sheet before editing its chords")
+
+    staging = job_dir / f".lead-sheet-edit-{uuid.uuid4().hex[:8]}"
+    backup = job_dir / f".lead-sheet-backup-{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copytree(final, staging)
+        metadata["chords"] = chords
+        counts = metadata.get("counts")
+        if isinstance(counts, dict):
+            counts["chords"] = len(chords)
+        (staging / "metadata.json").write_text(
+            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+        )
+        replace_chord_symbols(
+            staging / "lead-sheet.musicxml",
+            staging / "lead-sheet.mid",
+            chords,
+            tempo=float(metadata["tempo"]),
+        )
+        final.rename(backup)
+        try:
+            staging.rename(final)
+        except OSError:
+            backup.rename(final)
+            raise
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            logger.warning("could not remove chord-edit backup %s", backup)
+    except (OSError, ValueError, KeyError) as exc:
+        raise LeadSheetError(f"could not update chord exports: {exc}") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return metadata
+
+
 __all__ = [
     "FILES",
     "LEAD_SHEET_DIR",
@@ -334,4 +378,5 @@ __all__ = [
     "output_dir",
     "read_metadata",
     "remove",
+    "update_chords",
 ]
