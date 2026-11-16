@@ -22,6 +22,9 @@ from fastapi.testclient import TestClient
 import app.api.jobs as jobs_mod
 from app.core.models import Job
 from app.core.registry import _jobs
+from app.leadsheet.export.musicxml import build_score
+from app.leadsheet.quantize.chords_to_measures import MeasureChord
+from app.leadsheet.transcribe.events import NoteEvent
 from app.pipeline import lead_sheet
 from tests.ffmpeg_probe import skip_without_ffmpeg
 
@@ -85,6 +88,64 @@ def test_generate_refuses_a_song_with_no_stems(tmp_path):
     assert not lead_sheet.output_dir(tmp_path).exists()
 
 
+def test_available_stems_are_validated_and_passed_to_the_engine(tmp_path, monkeypatch):
+    _write_stems(tmp_path)
+    available = lead_sheet.available_melody_stems(tmp_path)
+    assert available == ["vocals", "bass", "guitar", "piano", "other"]
+
+    stems, selected = lead_sheet._prepare_stems(tmp_path, ["other", "guitar"])
+    assert set(stems) == {"vocals", "drums", "bass", "other", "piano", "guitar"}
+    assert list(selected) == ["other", "guitar"]
+    assert selected["other"].name == "other.wav"
+
+    with pytest.raises(lead_sheet.LeadSheetError, match="not available"):
+        lead_sheet._prepare_stems(tmp_path, ["lead_vocals"])
+    with pytest.raises(lead_sheet.LeadSheetError, match="unsupported"):
+        lead_sheet._prepare_stems(tmp_path, ["drums"])
+
+    def fake_sum(_inputs, dest, _label):
+        dest.write_bytes(b"mix")
+        return dest
+
+    monkeypatch.setattr(lead_sheet, "_sum_stems", fake_sum)
+
+    def fake_harmonic_mix(_inputs, dest, _sample_rate):
+        dest.write_bytes(b"harmonic")
+        return dest
+
+    captured = {}
+
+    def fake_engine(_source, out_dir, **kwargs):
+        captured.update(kwargs["melody_stems"])
+        for name in lead_sheet.FILES:
+            (out_dir / name).write_bytes(b"output")
+        (out_dir / "metadata.json").write_text(
+            json.dumps({"counts": {"notes": 1}}), encoding="utf-8"
+        )
+
+    monkeypatch.setattr(lead_sheet, "harmonic_mix", fake_harmonic_mix)
+    monkeypatch.setattr(lead_sheet, "run_engine", fake_engine)
+    lead_sheet.generate(_job(), tmp_path, melody_stems=["other", "guitar"])
+    assert list(captured) == ["other", "guitar"]
+    assert [path.name for path in captured.values()] == ["other.wav", "guitar.wav"]
+
+
+def test_score_keeps_selected_stems_as_separate_parts_with_shared_chords():
+    score = build_score(
+        [],
+        [MeasureChord(0, 0.0, 0, "", "C")],
+        tempo=120,
+        melody_parts={
+            "Backing Vocals": [],
+            "Vocals": [NoteEvent(0, 0.5, 60)],
+            "Other": [NoteEvent(0, 0.5, 72)],
+        },
+    )
+
+    assert [part.partName for part in score.parts] == ["Backing Vocals", "Vocals", "Other"]
+    assert [len(part.recurse().notes) for part in score.parts] == [0, 2, 1]
+
+
 def test_a_cancelled_run_leaves_nothing_behind(tmp_path):
     skip_without_ffmpeg()
     _write_stems(tmp_path)
@@ -120,10 +181,14 @@ def _api_job(**fields) -> Job:
     return job
 
 
-def _stub_generate(monkeypatch, calls: list | None = None) -> None:
+def _stub_generate(
+    monkeypatch, calls: list | None = None, melody_calls: list | None = None
+) -> None:
     def fake(job, job_dir, **kwargs):
         if calls is not None:
             calls.append(job.id)
+        if melody_calls is not None:
+            melody_calls.append(kwargs.get("melody_stems"))
         out = lead_sheet.output_dir(job_dir)
         out.mkdir(parents=True, exist_ok=True)
         (out / "lead-sheet.musicxml").write_text("<score-partwise/>", encoding="utf-8")
@@ -153,7 +218,9 @@ URL = f"/api/jobs/{API_ID}/lead-sheet"
 def test_post_runs_the_engine_and_serves_its_files(client, monkeypatch):
     _api_job()
     _stub_generate(monkeypatch)
-    assert client.get(URL).json()["status"] == "none"
+    state = client.get(URL).json()
+    assert state["status"] == "none"
+    assert state["available_melody_stems"] == ["vocals", "bass"]
 
     r = client.post(URL)
     assert r.status_code == 202
@@ -164,6 +231,21 @@ def test_post_runs_the_engine_and_serves_its_files(client, monkeypatch):
     file_r = client.get(body["files"]["lead-sheet.musicxml"])
     assert file_r.status_code == 200
     assert "musicxml" in file_r.headers["content-type"]
+
+
+def test_post_forwards_selected_stems_and_rejects_unavailable_stems(client, monkeypatch):
+    _api_job()
+    melody_calls: list[list[str] | None] = []
+    _stub_generate(monkeypatch, melody_calls=melody_calls)
+
+    assert client.post(URL, json={"melody_stems": ["piano"]}).status_code == 422
+    assert client.post(URL, json={"melody_stems": ["drums"]}).status_code == 422
+    assert client.post(URL, json={"melody_stems": ["bass", "bass"]}).status_code == 422
+
+    response = client.post(URL, json={"melody_stems": ["bass"]})
+    assert response.status_code == 202
+    assert _wait(client, URL)["status"] == "done"
+    assert melody_calls == [["bass"]]
 
 
 def test_a_second_post_keeps_the_existing_lead_sheet(client, monkeypatch):

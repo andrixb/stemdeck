@@ -1,12 +1,10 @@
-// The Lead Sheet tab: a view of the sidebar where the open track's melody
-// and chords are transcribed from the stems it already has.
+// The Lead Sheet tab: choose one or more of the open track's pitched stems
+// and transcribe each one as a separate part, with shared chord symbols.
 //
-// The work happens on the server (app/pipeline/lead_sheet.py), on the song's
-// vocals and pitched stems, and is written beside the song as MusicXML and
-// MIDI. This module only starts a run, polls it while it is going, and shows
-// what came back: key, tempo, bar/note/chord counts, the chord symbols, and
-// the first notes of the melody. The files themselves are downloads, opened
-// in a notation app rather than in the page.
+// The server (app/pipeline/lead_sheet.py) transcribes selected stems and
+// writes MusicXML/MIDI beside the song. This module starts a run, polls it,
+// and shows key, tempo, counts, chord symbols, and the first notes. The files
+// themselves are downloads, opened in a notation app rather than in the page.
 //
 // Nothing is fetched from the network and no lyrics or tags are read: the
 // lead sheet is made from the audio StemDeck already separated.
@@ -21,6 +19,10 @@ let loadToken = 0;
 let statusEl = null;
 let actionsEl = null;
 let bodyEl = null;
+let dialogEl = null;
+let stemOptionsEl = null;
+let dialogErrorEl = null;
+let pendingSelection = null;
 
 const POLL_MS = 1200;
 // Enough of a long transcription to see the shape without turning the
@@ -81,6 +83,32 @@ function actionButton(label, onClick, { primary = false, disabled = false } = {}
   return button;
 }
 
+function openSelectionDialog(trackId, force, state) {
+  const available = state.available_melody_stems || [];
+  if (!available.length) {
+    setStatus(t("leadSheet.noMelodyStems"), "error");
+    return;
+  }
+  const selected = new Set(
+    (state.metadata?.melody_stems || []).filter((name) => available.includes(name)),
+  );
+  stemOptionsEl.replaceChildren();
+  for (const stem of available) {
+    const label = el("label", "leadsheet-stem-option");
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.name = "melodyStem";
+    checkbox.value = stem;
+    checkbox.checked = selected.has(stem);
+    checkbox.addEventListener("change", () => { dialogErrorEl.textContent = ""; });
+    label.append(checkbox, el("span", null, t(`leadSheet.stem.${stem}`)));
+    stemOptionsEl.append(label);
+  }
+  dialogErrorEl.textContent = "";
+  pendingSelection = { trackId, force };
+  dialogEl.showModal();
+}
+
 function renderActions(state, trackId) {
   actionsEl.replaceChildren();
   if (state.status === "running") {
@@ -98,7 +126,7 @@ function renderActions(state, trackId) {
   actionsEl.append(
     actionButton(
       has ? t("leadSheet.regenerate") : t("leadSheet.generate"),
-      () => generate(trackId, has),
+      () => openSelectionDialog(trackId, has, state),
       { primary: !has },
     ),
   );
@@ -215,14 +243,14 @@ async function load(trackId = getCurrentTrackInfo()?.id) {
   if (state?.status === "running") schedulePoll(id);
 }
 
-async function generate(trackId, force) {
+async function generate(trackId, force, melodyStems) {
   if (!visible || !trackId) return;
   setStatus(t("leadSheet.starting"), "muted");
   try {
     const res = await fetch(apiBase(trackId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: Boolean(force) }),
+      body: JSON.stringify({ force: Boolean(force), melody_stems: melodyStems }),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -260,6 +288,7 @@ async function remove(trackId) {
 function setVisible(on) {
   visible = on;
   if (!on) {
+    if (dialogEl?.open) dialogEl.close();
     loadToken++;
     stopPolling();
     return;
@@ -271,11 +300,41 @@ export function initLeadSheet() {
   statusEl = document.getElementById("leadSheetStatus");
   actionsEl = document.getElementById("leadSheetActions");
   bodyEl = document.getElementById("leadSheetBody");
-  if (!statusEl || !actionsEl || !bodyEl) return;
+  dialogEl = document.getElementById("leadSheetDialog");
+  stemOptionsEl = document.getElementById("leadSheetStemOptions");
+  dialogErrorEl = document.getElementById("leadSheetDialogError");
+  const cancelButton = document.getElementById("leadSheetCancel");
+  const confirmButton = document.getElementById("leadSheetConfirm");
+  if (
+    !statusEl || !actionsEl || !bodyEl || !dialogEl || !stemOptionsEl ||
+    !dialogErrorEl || !cancelButton || !confirmButton
+  ) return;
+
+  cancelButton.addEventListener("click", () => dialogEl.close());
+  confirmButton.addEventListener("click", () => {
+    const melodyStems = Array.from(
+      stemOptionsEl.querySelectorAll('input[name="melodyStem"]:checked'),
+      (checkbox) => checkbox.value,
+    );
+    if (!melodyStems.length) {
+      dialogErrorEl.textContent = t("leadSheet.selectAtLeastOne");
+      return;
+    }
+    const request = pendingSelection;
+    dialogEl.close();
+    if (request) generate(request.trackId, request.force, melodyStems);
+  });
+  dialogEl.addEventListener("close", () => {
+    pendingSelection = null;
+    dialogErrorEl.textContent = "";
+  });
 
   document.addEventListener("catalogviewchange", (e) => setVisible(e.detail?.view === "leadsheet"));
   // A song opened while the tab is showing replaces what is on screen.
   document.addEventListener("trackopen", () => {
-    if (visible) load();
+    if (visible) {
+      if (dialogEl.open) dialogEl.close();
+      load();
+    }
   });
 }

@@ -7,8 +7,8 @@ chord recognition, beat/key estimation and MusicXML/MIDI export); this module
 is the bridge between StemDeck's separated stems and that engine.
 
 Running on the stems the song already has, rather than on its mix, is the
-whole point: melody comes from the isolated vocals, chords from the summed
-pitched stems (bass, guitar, piano, other), with drums and vocals kept out of
+whole point: melody comes from the pitched stems the user selects, chords from
+the summed pitched stems (bass, guitar, piano, other), with drums kept out of
 the harmony. The full mix is still the reference for tempo and for the final
 audio/score alignment.
 
@@ -52,8 +52,17 @@ FILES = (
 # of them: it is the complement of the stems the user picked, so adding it
 # would double-count part of the song.
 _MIX_STEMS = ("vocals", "drums", "bass", "other", "piano", "guitar")
-# Melody first: a split song may keep lead_vocals instead of vocals.
-_MELODY_STEMS = ("vocals", "lead_vocals")
+# Drums are not a melodic source; every other supported separated stem can
+# contribute a score part.
+MELODY_STEMS = (
+    "vocals",
+    "lead_vocals",
+    "backing_vocals",
+    "bass",
+    "guitar",
+    "piano",
+    "other",
+)
 _HARMONIC_STEMS = ("bass", "other", "piano", "guitar")
 
 
@@ -84,8 +93,16 @@ def existing_files(job_dir: Path) -> list[str]:
     return [name for name in FILES if (folder / name).is_file()]
 
 
-def _prepare_stems(job_dir: Path) -> tuple[dict[str, Path], Path | None]:
-    """The stems on disk and the melody stem among them, or raise.
+def available_melody_stems(job_dir: Path) -> list[str]:
+    """Return selectable pitched stems that exist for this song."""
+    stems_dir = job_dir / "stems"
+    return [name for name in MELODY_STEMS if stem_exists(stems_dir, name)]
+
+
+def _prepare_stems(
+    job_dir: Path, melody_stems: list[str] | None = None
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """The stems on disk and the selected melody stems, or raise.
 
     MP3 songs are decoded to WAV first (decoded_wav), because the engine's
     analysis reads through librosa/soundfile and must not depend on which
@@ -95,12 +112,27 @@ def _prepare_stems(job_dir: Path) -> tuple[dict[str, Path], Path | None]:
     names = [name for name in _MIX_STEMS if stem_exists(stems_dir, name)]
     if not names:
         raise LeadSheetError("this song has no stems to transcribe")
+    available = available_melody_stems(job_dir)
+    if melody_stems is None:
+        selected = next((name for name in ("vocals", "lead_vocals") if name in available), None)
+        # Preserve the old no-selection API behavior for existing clients.
+        return (
+            {name: stem_path(stems_dir, name) for name in names},
+            {selected: stem_path(stems_dir, selected)} if selected else {},
+        )
+    if not melody_stems:
+        raise LeadSheetError("select at least one stem to transcribe")
+    if len(set(melody_stems)) != len(melody_stems):
+        raise LeadSheetError("a stem may only be selected once")
+    unsupported = [name for name in melody_stems if name not in MELODY_STEMS]
+    if unsupported:
+        raise LeadSheetError(f"unsupported melody stem: {unsupported[0]}")
+    unavailable = [name for name in melody_stems if name not in available]
+    if unavailable:
+        raise LeadSheetError(f"selected stem is not available: {unavailable[0]}")
     return (
         {name: stem_path(stems_dir, name) for name in names},
-        next(
-            (stem_path(stems_dir, name) for name in _MELODY_STEMS if stem_exists(stems_dir, name)),
-            None,
-        ),
+        {name: stem_path(stems_dir, name) for name in melody_stems},
     )
 
 
@@ -150,6 +182,7 @@ def generate(
     *,
     tempo: float | None = None,
     beats_per_measure: int = 4,
+    melody_stems: list[str] | None = None,
     progress: Callable[[float, str], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> dict:
@@ -159,7 +192,7 @@ def generate(
     ``cancel`` is set, and LeadSheetError/PipelineError for anything the user
     can act on. Returns the result metadata.
     """
-    stems, melody_stem = _prepare_stems(job_dir)
+    stems, selected_melody_stems = _prepare_stems(job_dir, melody_stems)
     staging = job_dir / f".lead-sheet-{uuid.uuid4().hex[:8]}"
     staging.mkdir()
 
@@ -172,11 +205,11 @@ def generate(
     try:
         report(0.02, "Preparing stems...")
         with ExitStack() as stack:
-            decoded = {name: stack.enter_context(decoded_wav(path)) for name, path in stems.items()}
-            if melody_stem is not None:
-                decoded_melody = decoded.get("vocals") or decoded.get("lead_vocals")
-            else:
-                decoded_melody = None
+            stem_paths = {**stems, **selected_melody_stems}
+            decoded = {
+                name: stack.enter_context(decoded_wav(path)) for name, path in stem_paths.items()
+            }
+            decoded_melodies = {name: decoded[name] for name in selected_melody_stems}
 
             report(0.08, "Mixing stems...")
             mix = _sum_stems(
@@ -208,7 +241,8 @@ def generate(
                 title=job.title or "Untitled",
                 tempo=tempo or job.bpm,
                 beats_per_measure=beats_per_measure,
-                stems={"vocals": decoded_melody} if decoded_melody is not None else None,
+                stems=decoded,
+                melody_stems=decoded_melodies or None,
                 harmonic=harmonic,
                 progress=engine_progress,
             )
@@ -216,6 +250,8 @@ def generate(
         metadata = _read_staging_metadata(staging)
         metadata["source"] = job.source_url or job.title or ""
         metadata["generated_by"] = "stemdeck"
+        metadata["melody_stems"] = list(decoded_melodies) or ["mix"]
+        metadata["available_melody_stems"] = available_melody_stems(job_dir)
         # The stems came from the library, not from a Demucs run inside this
         # transcription; say so rather than let the engine claim otherwise.
         metadata.setdefault("engines", {})["separation"] = "stemdeck-stems"
@@ -253,9 +289,11 @@ def remove(job_dir: Path) -> None:
 __all__ = [
     "FILES",
     "LEAD_SHEET_DIR",
+    "MELODY_STEMS",
     "LeadSheetCancelled",
     "LeadSheetError",
     "PipelineError",
+    "available_melody_stems",
     "existing_files",
     "generate",
     "output_dir",

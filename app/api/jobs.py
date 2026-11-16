@@ -1365,9 +1365,21 @@ _LEAD_SHEET_MEDIA_TYPES = {
 class LeadSheetBody(BaseModel):
     tempo: float | None = Field(default=None, gt=0, le=400)
     beats_per_measure: int = Field(default=4, ge=1, le=16)
+    melody_stems: list[str] | None = Field(default=None, min_length=1, max_length=7)
     # Regenerate even when a lead sheet already exists (the lead-sheet tab's
     # "Generate again").
     force: bool = False
+
+    @field_validator("melody_stems")
+    @classmethod
+    def melody_stems_are_supported_and_unique(cls, stems: list[str] | None) -> list[str] | None:
+        if stems is not None:
+            unsupported = [name for name in stems if name not in lead_sheet.MELODY_STEMS]
+            if unsupported:
+                raise ValueError(f"unsupported melody stem: {unsupported[0]}")
+            if len(set(stems)) != len(stems):
+                raise ValueError("a melody stem may only be selected once")
+        return stems
 
 
 def _lead_sheet_job(job_id: str) -> tuple[Job, Path]:
@@ -1396,6 +1408,7 @@ def _lead_sheet_state(job: Job, job_dir: Path) -> dict:
         "error": job.lead_sheet_error,
         "has_lead_sheet": bool(files),
         "metadata": lead_sheet.read_metadata(job_dir),
+        "available_melody_stems": lead_sheet.available_melody_stems(job_dir),
         "files": {name: f"/api/jobs/{job.id}/lead-sheet/files/{name}" for name in files},
     }
 
@@ -1414,6 +1427,7 @@ async def _run_lead_sheet(
                 job_dir,
                 tempo=body.tempo,
                 beats_per_measure=body.beats_per_measure,
+                melody_stems=body.melody_stems,
                 cancel=cancel,
             )
     except LeadSheetCancelled:
@@ -1453,6 +1467,14 @@ async def create_lead_sheet(job_id: str, body: LeadSheetBody | None = None) -> d
     folder, so deleting the song deletes it too."""
     job, job_dir = _lead_sheet_job(job_id)
     body = body or LeadSheetBody()
+    if body.melody_stems is not None:
+        available = lead_sheet.available_melody_stems(job_dir)
+        unavailable = [name for name in body.melody_stems if name not in available]
+        if unavailable:
+            raise HTTPException(
+                status_code=422,
+                detail=f"selected stem is not available: {unavailable[0]}",
+            )
     if job.lead_sheet == "running":
         return _lead_sheet_state(job, job_dir)
     if not body.force and lead_sheet.existing_files(job_dir):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import music21 as m21
@@ -32,6 +32,7 @@ def build_score(
     key: tuple[int, str] = (0, "major"),
     flats: bool = False,
     title: str = "Untitled",
+    melody_parts: Mapping[str, Sequence[NoteEvent]] | None = None,
 ) -> m21.stream.Score:
     spq = 60.0 / tempo
     beats_per_measure, beat_unit = time_signature
@@ -41,29 +42,35 @@ def build_score(
     score.metadata.title = title
     score.metadata.composer = ""
 
-    part = m21.stream.Part()
-    part.partName = "Melody"
-    part.insert(0, m21.meter.TimeSignature(f"{beats_per_measure}/{beat_unit}"))
+    parts = melody_parts if melody_parts is not None else {"Melody": notes}
+    chord_part = next((name for name, part_notes in parts.items() if part_notes), None)
+    if chord_part is None:
+        chord_part = next(iter(parts), None)
+    for part_name, part_notes in parts.items():
+        part = m21.stream.Part()
+        part.partName = part_name
+        part.insert(0, m21.meter.TimeSignature(f"{beats_per_measure}/{beat_unit}"))
 
-    tonic = m21.pitch.Pitch(root_name(key[0], flats))
-    part.insert(0, m21.key.KeySignature(m21.key.Key(tonic, key[1]).sharps))
-    part.insert(0, m21.tempo.MetronomeMark(number=tempo))
+        tonic = m21.pitch.Pitch(root_name(key[0], flats))
+        part.insert(0, m21.key.KeySignature(m21.key.Key(tonic, key[1]).sharps))
+        part.insert(0, m21.tempo.MetronomeMark(number=tempo))
 
-    for offset, duration, note in _layout(notes, spq):
-        element = m21.note.Note(note.pitch)
-        element.volume.velocity = int(note.velocity)
-        element.quarterLength = duration
-        part.insert(offset, element)
+        for offset, duration, note in _layout(part_notes, spq):
+            element = m21.note.Note(note.pitch)
+            element.volume.velocity = int(note.velocity)
+            element.quarterLength = duration
+            part.insert(offset, element)
 
-    for chord in measure_chords:
-        if chord.quality == "N" or chord.quality not in KIND_MAP:
-            continue
-        root = m21.pitch.Pitch(root_name(chord.root, flats))
-        symbol = m21.harmony.ChordSymbol(f"{root.name}{chord.quality}")
-        offset = chord.measure * beats_per_measure + chord.beat
-        part.insert(offset, symbol)
+        if part_name == chord_part:
+            for chord in measure_chords:
+                if chord.quality == "N" or chord.quality not in KIND_MAP:
+                    continue
+                root = m21.pitch.Pitch(root_name(chord.root, flats))
+                symbol = m21.harmony.ChordSymbol(f"{root.name}{chord.quality}")
+                offset = chord.measure * beats_per_measure + chord.beat
+                part.insert(offset, symbol)
 
-    score.insert(0, part)
+        score.insert(0, part)
     return score
 
 

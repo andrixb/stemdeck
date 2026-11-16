@@ -502,6 +502,21 @@
               <div class="leadsheet-actions" id="leadSheetActions"></div>
               <div class="leadsheet-body" id="leadSheetBody"></div>
             </section>
+            <dialog class="leadsheet-dialog" id="leadSheetDialog" aria-labelledby="leadSheetDialogTitle" aria-describedby="leadSheetDialogHelp">
+              <div class="leadsheet-dialog-card">
+                <h2 id="leadSheetDialogTitle" data-i18n="leadSheet.chooseTitle">Choose parts to transcribe</h2>
+                <p id="leadSheetDialogHelp" data-i18n="leadSheet.chooseHelp">Each selected stem becomes its own score part. Chord symbols are shared.</p>
+                <fieldset class="leadsheet-stem-fieldset">
+                  <legend data-i18n="leadSheet.chooseParts">Parts</legend>
+                  <div class="leadsheet-stem-options" id="leadSheetStemOptions"></div>
+                </fieldset>
+                <p class="leadsheet-dialog-error" id="leadSheetDialogError" role="alert"></p>
+                <div class="leadsheet-dialog-actions">
+                  <button class="leadsheet-btn" id="leadSheetCancel" type="button" data-i18n="leadSheet.cancel">Cancel</button>
+                  <button class="leadsheet-btn primary" id="leadSheetConfirm" type="button" data-i18n="leadSheet.transcribe">Transcribe</button>
+                </div>
+              </div>
+            </dialog>
           </div>
         </aside>
 

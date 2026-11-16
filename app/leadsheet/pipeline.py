@@ -42,13 +42,15 @@ def run(
     beats_per_measure: int = 4,
     progress: Progress | None = None,
     stems: dict[str, Path] | None = None,
+    melody_stems: dict[str, Path] | None = None,
     harmonic: Path | None = None,
 ) -> dict[str, Any]:
     """Transcribe ``source`` to a lead sheet.
 
     ``stems`` lets a caller supply already separated audio (for example the
-    stems a library keeps for a track) instead of running Demucs again. The
-    mapping is keyed by stem name; ``vocals`` feeds the melody, and
+    stems a library keeps for a track) instead of running Demucs again.
+    ``melody_stems`` selects named sources to transcribe as separate score
+    parts. When omitted, the legacy single "Melody" source is used.
     ``harmonic``, when given, is the summed pitched audio used for chords.
     ``source`` is still the full mix, used for tempo, beats and alignment.
     """
@@ -101,7 +103,6 @@ def run(
 
     report(0.32, "loading audio")
     y_mix = load_audio(fragment, SAMPLE_RATE)
-    y_vocal = load_audio(vocal_path, SAMPLE_RATE) if vocal_path != fragment else y_mix
     y_harmonic = load_audio(harmonic_path, SAMPLE_RATE) if harmonic_path != fragment else y_mix
 
     report(0.4, "estimating tempo, beats and key")
@@ -109,14 +110,38 @@ def run(
     if tempo is not None:
         grid = replace(grid, tempo=float(tempo))
 
-    report(0.48, "transcribing melody")
-    melody, melody_engine = transcribe_melody(y_vocal, SAMPLE_RATE)
-    notes = quantize_notes(melody, grid.tempo)
-    if not notes:
-        raise PipelineError(
-            "no melody detected; try a narrower range, a vocal-forward section, "
-            "or enable separation"
+    if melody_stems is None:
+        y_vocal = load_audio(vocal_path, SAMPLE_RATE) if vocal_path != fragment else y_mix
+        sources = {"Melody": y_vocal}
+    else:
+        sources = {
+            _part_name(name): load_audio(Path(path), SAMPLE_RATE)
+            for name, path in melody_stems.items()
+        }
+    melody_parts = {}
+    melody_engines = {}
+    note_entries = []
+    for index, (part_name, y_part) in enumerate(sources.items()):
+        report(
+            0.48 + 0.1 * index / max(1, len(sources)),
+            f"transcribing {part_name}",
         )
+        melody, melody_engine = transcribe_melody(y_part, SAMPLE_RATE)
+        part_notes = quantize_notes(melody, grid.tempo)
+        melody_parts[part_name] = part_notes
+        melody_engines[part_name] = melody_engine
+        if not part_notes:
+            warnings.append(f"no melody detected in {part_name}; score part is empty")
+            continue
+        note_entries.extend((note.start, part_name, note) for note in part_notes)
+
+    if not note_entries:
+        raise PipelineError(
+            "no melody detected in the selected stem; try another stem or a "
+            "different section of the song"
+        )
+    note_entries.sort(key=lambda item: item[0])
+    notes = [item[2] for item in note_entries]
 
     report(0.6, "recognizing chords")
     import librosa
@@ -136,6 +161,7 @@ def run(
         key=(key.tonic, key.mode),
         flats=key.flats,
         title=score_title,
+        melody_parts=melody_parts,
     )
     xml_path = write_musicxml(score, out_dir / "lead-sheet.musicxml")
     midi_path = write_midi(score, out_dir / "lead-sheet.mid")
@@ -150,6 +176,10 @@ def run(
         fragment_start=start or 0.0,
         beats_per_measure=grid.beats_per_measure,
     )
+    for aligned_note, (_start, part_name, _note) in zip(
+        alignment["notes"], note_entries, strict=True
+    ):
+        aligned_note["part"] = part_name
     alignment_path = write_alignment(alignment, out_dir / "alignment.json")
     if alignment["low_confidence"]:
         warnings.append("audio/score alignment confidence is low; timing may drift")
@@ -182,8 +212,20 @@ def run(
             "measures": measures,
             "beats": len(grid.beats),
         },
+        "melody_stems": (
+            list(melody_stems)
+            if melody_stems is not None
+            else ["vocals"]
+            if "vocals" in stem_files
+            else ["mix"]
+        ),
+        "parts": [
+            {"name": name, "notes": len(part_notes)} for name, part_notes in melody_parts.items()
+        ],
         "engines": {
-            "melody": melody_engine,
+            "melody": (
+                next(iter(melody_engines.values())) if len(melody_engines) == 1 else melody_engines
+            ),
             "chords": "chroma-template",
             "separation": "demucs" if stem_files else "none",
             "alignment": alignment["method"],
@@ -205,8 +247,9 @@ def run(
                 "duration": round(note.duration, 3),
                 "pitch": note.pitch,
                 "name": f"{root_name(note.pitch % 12)}{note.pitch // 12 - 1}",
+                "part": part_name,
             }
-            for note in notes
+            for _start, part_name, note in note_entries
         ],
         "warnings": warnings,
     }
@@ -239,6 +282,10 @@ def _rel(path: Path, root: Path) -> str:
         return str(Path(path).resolve().relative_to(Path(root).resolve()))
     except ValueError:
         return str(path)
+
+
+def _part_name(stem: str) -> str:
+    return stem.replace("_", " ").title()
 
 
 __all__ = ["PipelineError", "run"]
