@@ -55,11 +55,15 @@ def build_score(
         part.insert(0, m21.key.KeySignature(m21.key.Key(tonic, key[1]).sharps))
         part.insert(0, m21.tempo.MetronomeMark(number=tempo))
 
+        melody = m21.stream.Voice()
+        melody.id = 1
         for offset, duration, note in _layout(part_notes, spq):
             element = m21.note.Note(note.pitch)
             element.volume.velocity = int(note.velocity)
             element.quarterLength = duration
-            part.insert(offset, element)
+            melody.insert(offset, element)
+        if melody:
+            part.insert(0, melody)
 
         if part_name == chord_part:
             for chord in measure_chords:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 import numpy as np
@@ -22,7 +23,7 @@ from fastapi.testclient import TestClient
 import app.api.jobs as jobs_mod
 from app.core.models import Job
 from app.core.registry import _jobs
-from app.leadsheet.export.musicxml import build_score
+from app.leadsheet.export.musicxml import build_score, write_musicxml
 from app.leadsheet.quantize.chords_to_measures import MeasureChord
 from app.leadsheet.transcribe.events import NoteEvent
 from app.leadsheet.transcribe.melody import transcribe_melody
@@ -175,6 +176,23 @@ def test_score_keeps_selected_stems_as_separate_parts_with_shared_chords():
 
     assert [part.partName for part in score.parts] == ["Backing Vocals", "Vocals", "Other"]
     assert [len(part.recurse().notes) for part in score.parts] == [0, 2, 1]
+
+
+def test_musicxml_does_not_export_overlapping_melody_as_voice_zero(tmp_path):
+    score = build_score(
+        [],
+        [MeasureChord(0, 0.0, 0, "", "C")],
+        tempo=120,
+        melody_parts={"Bass": [NoteEvent(0, 0.5, 65), NoteEvent(0, 0.5, 59)]},
+    )
+    path = write_musicxml(score, tmp_path / "overlapping.musicxml")
+
+    root = ET.parse(path).getroot()
+    bass = root.find("./part")
+    notes = [note for note in bass.findall(".//note") if note.find("pitch") is not None]
+
+    assert len(notes) == 2
+    assert all(note.findtext("voice") != "0" for note in notes)
 
 
 def test_a_cancelled_run_leaves_nothing_behind(tmp_path):
