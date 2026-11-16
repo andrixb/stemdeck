@@ -713,6 +713,26 @@
             </div>
           </div>
 
+          <!-- Chords from the lead-sheet transcription: directly above the
+               Mixer row and aligned to the same zoomed timeline. -->
+          <div class="daw-chords-ribbon hidden" id="daw-chords-ribbon">
+            <div class="daw-mixer-label daw-chords-header">
+              <span class="daw-sections-title-group">
+                <span class="daw-label-title" data-i18n="chords.title">Chords</span>
+              </span>
+              <span class="sections-header-actions">
+                <span class="sections-save-indicator hidden" id="chordTrackSaveIndicator" aria-live="polite"></span>
+                <button class="sections-add-btn-label" id="chordTrackAdd" type="button" title="Add or edit a chord at the playhead" aria-label="Add or edit a chord at the playhead" data-i18n-title="chords.addTitle" data-i18n-aria-label="chords.addTitle">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                  <span data-i18n="chords.add">Add</span>
+                </button>
+              </span>
+            </div>
+            <div class="daw-sections-area daw-chords-area">
+              <div class="daw-sections-track daw-chords-track" id="daw-chords-track"></div>
+            </div>
+          </div>
+
           <!-- Waveform header / ruler -->
           <div class="daw-wave-header">
             <div class="daw-wave-label">
@@ -742,26 +762,6 @@
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-
-          <!-- Chords from the lead-sheet transcription: a global lane directly
-               above the audio tracks, aligned to the same zoomed timeline. -->
-          <div class="daw-chords-ribbon hidden" id="daw-chords-ribbon">
-            <div class="daw-mixer-label daw-chords-header">
-              <span class="daw-sections-title-group">
-                <span class="daw-label-title" data-i18n="chords.title">Chords</span>
-              </span>
-              <span class="sections-header-actions">
-                <span class="sections-save-indicator hidden" id="chordTrackSaveIndicator" aria-live="polite"></span>
-                <button class="sections-add-btn-label" id="chordTrackAdd" type="button" title="Add or edit a chord at the playhead" aria-label="Add or edit a chord at the playhead" data-i18n-title="chords.addTitle" data-i18n-aria-label="chords.addTitle">
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                  <span data-i18n="chords.add">Add</span>
-                </button>
-              </span>
-            </div>
-            <div class="daw-sections-area daw-chords-area">
-              <div class="daw-sections-track daw-chords-track" id="daw-chords-track"></div>
             </div>
           </div>
 
